@@ -24,7 +24,7 @@ class OpenTicketsByUser(Feed):
     description_template = 'helpdesk/rss/ticket_description.html'
 
     def get_object(self, request, user_name, queue_slug=None):
-        user = get_object_or_404(User, username=user_name)
+        user = get_object_or_404(User, email=user_name)
         if queue_slug:
             queue = get_object_or_404(Queue, slug=queue_slug)
         else:
