@@ -93,6 +93,16 @@ class BaseCreateTicketView(abstract_views.AbstractCreateTicketMixin, FormView):
             initial_data['priority'] = settings.HELPDESK_PUBLIC_TICKET_PRIORITY
         if hasattr(settings, 'HELPDESK_PUBLIC_TICKET_DUE_DATE'):
             initial_data['due_date'] = settings.HELPDESK_PUBLIC_TICKET_DUE_DATE
+
+        if queue_slug := self.request.GET.get('queue_slug', None):
+            initial_data['queue'] = Queue.objects.get(
+                slug=queue_slug,
+                allow_public_submission=True
+            ).id
+
+        if queue_priority := self.request.GET.get('priority', None):
+            initial_data['priority'] = queue_priority
+
         return initial_data
 
     def get_form_kwargs(self, *args, **kwargs):
