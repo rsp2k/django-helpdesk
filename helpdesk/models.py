@@ -6,9 +6,9 @@ django-helpdesk - A Django powered ticket tracker for small enterprise.
 models.py - Model (and hence database) definitions. This is the core of the
             helpdesk structure.
 """
+from django.db.models import Q
 
-
-from .lib import format_time_spent, convert_value, daily_time_spent_calculation
+from .lib import format_time_spent, convert_value, daily_time_spent_calculation, safe_template_context
 from .templated_email import send_templated_mail
 from .validators import validate_file_extension
 import datetime
@@ -66,6 +66,61 @@ def get_markdown(text):
     )
 
 
+class QueueManager(models.Manager):
+    def escalate_tickets(self):
+        for queue in self.all():
+            last = datetime.date.today() - datetime.timedelta(days=queue.escalate_days)
+            today = datetime.date.today()
+            work_date = last
+
+            days = 0
+
+            while work_date < today:
+                if not EscalationExclusion.objects.filter(date=work_date).exists():
+                    days += 1
+                work_date = work_date + datetime.timedelta(days=1)
+
+            req_last_escl_date = timezone.now() - datetime.timedelta(days=days)
+            tickets = queue.ticket_set.filter(
+                status__in=Ticket.OPEN_STATUSES
+            ).exclude(
+                priority=1
+            ).filter(
+                Q(on_hold__isnull=True) | Q(on_hold=False)
+            ).filter(
+                Q(last_escalation__lte=req_last_escl_date) |
+                Q(last_escalation__isnull=True, created__lte=req_last_escl_date)
+            )
+
+            for ticket in tickets:
+                ticket.last_escalation = timezone.now()
+                ticket.priority -= 1
+                ticket.save()
+
+                context = safe_template_context(ticket)
+
+                ticket.send(
+                    {'submitter': ('escalated_submitter', context),
+                     'ticket_cc': ('escalated_cc', context),
+                     'assigned_to': ('escalated_owner', context)},
+                    fail_silently=True,
+                )
+
+                followup = ticket.followup_set.create(
+                    title=_('Ticket Escalated'),
+                    public=True,
+                    comment=_('Ticket escalated after %(nb)s days') % {'nb': queue.escalate_days},
+                )
+
+                followup.ticketchange_set.create(
+                    field=_('Priority'),
+                    old_value=ticket.priority + 1,
+                    new_value=ticket.priority,
+                )
+
+            return tickets
+
+
 class Queue(models.Model):
     """
     A queue is a collection of tickets into what would generally be business
@@ -75,6 +130,8 @@ class Queue(models.Model):
     a queue for each of Accounts, Pre-Sales, and Support.
 
     """
+
+    objects = QueueManager()
 
     title = models.CharField(
         _('Title'),
