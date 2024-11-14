@@ -10,10 +10,15 @@ except ImportError:
     pass
 
 try:
-    from huey.contrib.djhuey import db_task
-    @db_task
+    from huey import crontab
+    from huey.contrib.djhuey import db_task, db_periodic_task
+    @db_periodic_task(crontab(minute='*/2'))
     def helpdesk_process_email():
         process_email()
-    
+
+    @db_periodic_task(crontab(minute='0'))
+    def escalate_tickets():
+        create_exclusions(occurrences=1)
+
 except  ImportError:
     pass

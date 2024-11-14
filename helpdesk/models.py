@@ -1209,6 +1209,29 @@ class PreSetReply(models.Model):
         return '%s' % self.name
 
 
+class EscalationExclusionManager(models.Manager):
+    def create_exclusions(self, days, occurrences, queues):
+        created_exclusions = []
+        days = days.split(',')
+        for day in days:
+            day_name = day
+            day = day_names[day]
+            workdate = date.today()
+            for _ in range(0, occurrences):
+                if day == workdate.weekday():
+                    if EscalationExclusion.objects.filter(date=workdate).count() == 0:
+                        esc = EscalationExclusion.create(
+                            name='Auto Exclusion for %s' % day_name,
+                            date=workdate
+                        )
+                        created_exclusions.append(esc)
+
+                        for q in queues:
+                            esc.queues.add(q)
+                workdate += timedelta(days=1)
+
+        return created_exclusions
+
 class EscalationExclusion(models.Model):
     """
     An 'EscalationExclusion' lets us define a date on which escalation should
@@ -1219,6 +1242,8 @@ class EscalationExclusion(models.Model):
     To create these on a regular basis, check out the README file for an
     example cronjob that runs 'create_escalation_exclusions.py'.
     """
+
+    objects = EscalationExclusionManager()
 
     queues = models.ManyToManyField(
         Queue,

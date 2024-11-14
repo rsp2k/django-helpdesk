@@ -48,7 +48,6 @@ class Command(BaseCommand):
         occurrences = options['occurrences'] or 1
         verbose = False
         queue_slugs = options['queues']
-        queues = []
 
         if options['escalate-verbosely']:
             verbose = True
@@ -56,17 +55,22 @@ class Command(BaseCommand):
         if not (days and occurrences):
             raise CommandError('One or more occurrences must be specified.')
 
-        if queue_slugs is not None:
-            queue_set = queue_slugs.split(',')
-            for queue in queue_set:
-                try:
-                    q = Queue.objects.get(slug__exact=queue)
-                except Queue.DoesNotExist:
-                    raise CommandError("Queue %s does not exist." % queue)
-                queues.append(q)
+        queues = parse_queues(queue_slugs)
 
-        create_exclusions(days=days, occurrences=occurrences,
-                          verbose=verbose, queues=queues)
+        created_exclusions = create_exclusions(days=days, occurrences=occurrences, queues=queues)
+        if verbose:
+            pprint(created_exclusions)
+
+def parse_queue_slugs(queue_slugs):
+    queues = []
+    if queue_slugs is not None:
+        queue_set = queue_slugs.split(',')
+        for queue in queue_set:
+            try:
+                queues.append(Queue.objects.get(slug__exact=queue))
+            except Queue.DoesNotExist:
+                raise CommandError("Queue %s does not exist." % queue)
+    return queues
 
 
 day_names = {
@@ -78,34 +82,6 @@ day_names = {
     'saturday': 5,
     'sunday': 6,
 }
-
-
-def create_exclusions(days, occurrences, verbose, queues):
-    days = days.split(',')
-    for day in days:
-        day_name = day
-        day = day_names[day]
-        workdate = date.today()
-        i = 0
-        while i < occurrences:
-            if day == workdate.weekday():
-                if EscalationExclusion.objects.filter(date=workdate).count() == 0:
-                    esc = EscalationExclusion(
-                        name='Auto Exclusion for %s' % day_name, date=workdate)
-                    esc.save()
-
-                    if verbose:
-                        print("Created exclusion for %s %s" %
-                              (day_name, workdate))
-
-                    for q in queues:
-                        esc.queues.add(q)
-                        if verbose:
-                            print("  - for queue %s" % q)
-
-                i += 1
-            workdate += timedelta(days=1)
-
 
 def usage():
     print("Options:")
@@ -128,7 +104,6 @@ if __name__ == '__main__':
     occurrences = 1
     verbose = False
     queue_slugs = None
-    queues = []
 
     for o, a in opts:
         if o in ('-x', '--escalate-verbosely'):
@@ -144,15 +119,8 @@ if __name__ == '__main__':
         usage()
         sys.exit(2)
 
-    if queue_slugs is not None:
-        queue_set = queue_slugs.split(',')
-        for queue in queue_set:
-            try:
-                q = Queue.objects.get(slug__exact=queue)
-            except Queue.DoesNotExist:
-                print("Queue %s does not exist." % queue)
-                sys.exit(2)
-            queues.append(q)
+    queues = parse_queues(queue_slugs)
 
-    create_exclusions(days=days, occurrences=occurrences,
-                      verbose=verbose, queues=queues)
+    exclusions = EscalationExclusion.objects.create_exclusions(days=days, occurrences=occurrences, queues=queues)
+    if verbose:
+        pprint(exclusions)
