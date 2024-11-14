@@ -141,32 +141,48 @@ def generate_email_address(
     # format email address for RFC 2822 and return
     return email.utils.formataddr((real_name, email_address)), email_address, first_name, last_name
 
-def generate_file_mime_part(locale: str="en_US",filename: str = None) -> Message:
+def generate_file_mime_part(locale: str="en_US",filename: str = None, content: str = None) -> Message:
     """
     
     :param locale: change this to generate locale specific file name and attachment content
     :param filename: pass a file name if you want to specify a specific name otherwise a random name will be generated
+    :param content: pass a string value if you want have specific content otherwise a random string will be generated
     """
     part = MIMEBase('application', 'octet-stream')
-    part.set_payload(get_fake("text", locale=locale, min_length=1024))
+    part.set_payload(get_fake("text", locale=locale, min_length=1024) if content is None else content)
     encoders.encode_base64(part)
     if not filename:
         filename = get_fake("word", locale=locale, min_length=8) + ".txt"
-    part.add_header('Content-Disposition', "attachment; filename= %s" % filename)
+    part.add_header('Content-Disposition', "attachment; filename=%s" % filename)
     return part
 
-def generate_image_mime_part(locale: str="en_US",imagename: str = None) -> Message:
+def generate_executable_mime_part(locale: str="en_US",filename: str = None, content: str = None) -> Message:
+    """
+    
+    :param locale: change this to generate locale specific file name and attachment content
+    :param filename: pass a file name if you want to specify a specific name otherwise a random name will be generated
+    :param content: pass a string value if you want have specific content otherwise a random string will be generated
+    """
+    part = MIMEBase('application', 'vnd.microsoft.portable-executable')
+    part.set_payload(get_fake("text", locale=locale, min_length=1024) if content is None else content)
+    encoders.encode_base64(part)
+    if not filename:
+        filename = get_fake("word", locale=locale, min_length=8) + ".exe"
+    part.add_header('Content-Disposition', "attachment; filename=%s" % filename)
+    return part
+
+def generate_image_mime_part(locale: str="en_US",imagename: str = None, disposition_primary_type: str = "attachment") -> Message:
     """
     
     :param locale: change this to generate locale specific file name and attachment content
     :param filename: pass a file name if you want to specify a specific name otherwise a random name will be generated
     """
     part = MIMEImage(generate_random_image(image_format="JPEG", array_dims=(200, 200)))
-    part.set_payload(get_fake("text", locale=locale, min_length=1024))
+    #part.set_payload(get_fake("text", locale=locale, min_length=1024))
     encoders.encode_base64(part)
     if not imagename:
         imagename = get_fake("word", locale=locale, min_length=8) + ".jpg"
-    part.add_header('Content-Disposition', "attachment; filename= %s" % imagename)
+    part.add_header('Content-Disposition', disposition_primary_type + "; filename= %s" % imagename)
     return part
 
 def generate_email_list(address_cnt: int = 3,
@@ -214,12 +230,14 @@ def generate_mime_part(locale: str="en_US",
     """
     if "plain" == part_type:
         body = get_fake("text", locale=locale, min_length=1024)
-        msg = MIMEText(body)
+        msg = MIMEText(body, part_type)
     elif "html" == part_type:
         body = get_fake_html(locale=locale, wrap_in_body_tag=True)
-        msg = MIMEText(body)
+        msg = MIMEText(body, part_type)
     elif "file" == part_type:
         msg = generate_file_mime_part(locale=locale)
+    elif "executable" == part_type:
+        msg = generate_executable_mime_part(locale=locale)
     elif "image" == part_type:
         msg = generate_image_mime_part(locale=locale)
     else:
@@ -227,17 +245,19 @@ def generate_mime_part(locale: str="en_US",
     return msg
 
 def generate_multipart_email(locale: str="en_US",
-        type_list: typing.List[str]=["plain", "html", "attachment"],
+        type_list: typing.List[str]=["plain", "html", "image"],
+        sub_type: str = None,
         use_short_email: bool=False
         ) -> typing.Tuple[Message, typing.Tuple[str, str], typing.Tuple[str, str]]:
     """
     Generates an email including headers with the defined multiparts
     
     :param locale:
-    :param type_list: options are plain, html, image (attachment), file (attachment)
+    :param type_list: options are plain, html, image (attachment), file (attachment), and executable (.exe attachment)
+    :param sub_type: multipart sub type that defaults to "mixed" if not specified
     :param use_short_email: produces a "To" or "From" that is only the email address if True
     """    
-    msg = MIMEMultipart()
+    msg = MIMEMultipart(sub_type) if sub_type else MIMEMultipart()
     for part_type in type_list:
         msg.attach(generate_mime_part(locale=locale, part_type=part_type))
     from_meta, to_meta = add_simple_email_headers(msg, locale=locale, use_short_email=use_short_email)

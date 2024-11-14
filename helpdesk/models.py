@@ -8,7 +8,7 @@ models.py - Model (and hence database) definitions. This is the core of the
 """
 
 
-from .lib import convert_value
+from .lib import format_time_spent, convert_value, daily_time_spent_calculation
 from .templated_email import send_templated_mail
 from .validators import validate_file_extension
 import datetime
@@ -30,17 +30,6 @@ import os
 import re
 from rest_framework import serializers
 import uuid
-
-
-def format_time_spent(time_spent):
-    if time_spent:
-        time_spent = "{0:02d}h:{1:02d}m".format(
-            time_spent.seconds // 3600,
-            time_spent.seconds % 3600 // 60
-        )
-    else:
-        time_spent = ""
-    return time_spent
 
 
 class EscapeHtml(Extension):
@@ -175,7 +164,9 @@ class Queue(models.Model):
     email_box_type = models.CharField(
         _('E-Mail Box Type'),
         max_length=5,
-        choices=(('pop3', _('POP 3')), ('imap', _('IMAP')),
+        choices=(('pop3', _('POP 3')),
+                 ('imap', _('IMAP')),
+                 ('oauth', _('IMAP OAUTH')),
                  ('local', _('Local Directory'))),
         blank=True,
         null=True,
@@ -371,11 +362,8 @@ class Queue(models.Model):
         """Return back total time spent on the ticket. This is calculated value
         based on total sum from all FollowUps
         """
-        total = datetime.timedelta(0)
-        for val in self.ticket_set.all():
-            if val.time_spent:
-                total = total + val.time_spent
-        return total
+        res = FollowUp.objects.filter(ticket__queue=self).aggregate(models.Sum('time_spent'))
+        return res.get('time_spent__sum', datetime.timedelta(0))
 
     @property
     def time_spent_formated(self):
@@ -460,27 +448,17 @@ class Ticket(models.Model):
     the dashboard to prompt users to take ownership of them.
     """
 
-    OPEN_STATUS = 1
-    REOPENED_STATUS = 2
-    RESOLVED_STATUS = 3
-    CLOSED_STATUS = 4
-    DUPLICATE_STATUS = 5
+    OPEN_STATUS = helpdesk_settings.OPEN_STATUS
+    REOPENED_STATUS = helpdesk_settings.REOPENED_STATUS
+    RESOLVED_STATUS = helpdesk_settings.RESOLVED_STATUS
+    CLOSED_STATUS = helpdesk_settings.CLOSED_STATUS
+    DUPLICATE_STATUS = helpdesk_settings.DUPLICATE_STATUS
 
-    STATUS_CHOICES = (
-        (OPEN_STATUS, _('Open')),
-        (REOPENED_STATUS, _('Reopened')),
-        (RESOLVED_STATUS, _('Resolved')),
-        (CLOSED_STATUS, _('Closed')),
-        (DUPLICATE_STATUS, _('Duplicate')),
-    )
+    STATUS_CHOICES = helpdesk_settings.TICKET_STATUS_CHOICES
+    OPEN_STATUSES = helpdesk_settings.TICKET_OPEN_STATUSES
+    STATUS_CHOICES_FLOW = helpdesk_settings.TICKET_STATUS_CHOICES_FLOW
 
-    PRIORITY_CHOICES = (
-        (1, _('1. Critical')),
-        (2, _('2. High')),
-        (3, _('3. Normal')),
-        (4, _('4. Low')),
-        (5, _('5. Very Low')),
-    )
+    PRIORITY_CHOICES = helpdesk_settings.TICKET_PRIORITY_CHOICES
 
     title = models.CharField(
         _('Title'),
@@ -601,11 +579,8 @@ class Ticket(models.Model):
         """Return back total time spent on the ticket. This is calculated value
         based on total sum from all FollowUps
         """
-        total = datetime.timedelta(0)
-        for val in self.followup_set.all():
-            if val.time_spent:
-                total = total + val.time_spent
-        return total
+        res = FollowUp.objects.filter(ticket=self).aggregate(models.Sum('time_spent'))
+        return res.get('time_spent__sum', datetime.timedelta(0))
 
     @property
     def time_spent_formated(self):
@@ -716,6 +691,22 @@ class Ticket(models.Model):
         return u'%s%s%s' % (self.get_status_display(), held_msg, dep_msg)
     get_status = property(_get_status)
 
+    def _get_allowed_status_flow(self):
+        """
+        Returns the list of allowed ticket status modifications for current state.
+        """
+        status_id_list = self.STATUS_CHOICES_FLOW.get(self.status, ())
+        if status_id_list:
+            # keep defined statuses in order and add labels for display
+            status_dict = dict(helpdesk_settings.TICKET_STATUS_CHOICES)
+            new_statuses = [(status_id, status_dict.get(status_id, _('No label')))
+                            for status_id in status_id_list]
+        else:
+            # defaults to all choices if status was not mapped
+            new_statuses = helpdesk_settings.TICKET_STATUS_CHOICES
+        return new_statuses
+    get_allowed_status_flow = property(_get_allowed_status_flow)
+
     def _get_ticket_url(self):
         """
         Returns a publicly-viewable URL for this ticket, used when giving
@@ -772,9 +763,8 @@ class Ticket(models.Model):
         True = any dependencies are resolved
         False = There are non-resolved dependencies
         """
-        OPEN_STATUSES = (Ticket.OPEN_STATUS, Ticket.REOPENED_STATUS)
         return TicketDependency.objects.filter(ticket=self).filter(
-            depends_on__status__in=OPEN_STATUSES).count() == 0
+            depends_on__status__in=Ticket.OPEN_STATUSES).count() == 0
     can_be_resolved = property(_can_be_resolved)
 
     def get_submitter_userprofile(self):
@@ -990,9 +980,12 @@ class FollowUp(models.Model):
         return u"%s#followup%s" % (self.ticket.get_absolute_url(), self.id)
 
     def save(self, *args, **kwargs):
-        t = self.ticket
-        t.modified = timezone.now()
-        t.save()
+        self.ticket.modified = timezone.now()
+        self.ticket.save()
+
+        if helpdesk_settings.FOLLOWUP_TIME_SPENT_AUTO and not self.time_spent:
+            self.time_spent = self.time_spent_calculation()
+        
         super(FollowUp, self).save(*args, **kwargs)
 
     def get_markdown(self):
@@ -1002,6 +995,85 @@ class FollowUp(models.Model):
     def time_spent_formated(self):
         return format_time_spent(self.time_spent)
 
+    def time_spent_calculation(self):
+        "Returns timedelta according to rules settings."
+        
+        open_hours = helpdesk_settings.FOLLOWUP_TIME_SPENT_OPENING_HOURS
+        holidays = helpdesk_settings.FOLLOWUP_TIME_SPENT_EXCLUDE_HOLIDAYS
+        exclude_statuses = helpdesk_settings.FOLLOWUP_TIME_SPENT_EXCLUDE_STATUSES
+        exclude_queues = helpdesk_settings.FOLLOWUP_TIME_SPENT_EXCLUDE_QUEUES
+        
+        # queryset for this ticket previous follow-ups
+        prev_fup_qs = self.ticket.followup_set.all()
+        if self.id:
+            # if the follow-up exist in DB, only keep previous follow-ups
+            prev_fup_qs = prev_fup_qs.filter(date__lt=self.date)
+
+        # handle exclusions
+
+        # extract previous status from follow-up or ticket for exclusion check
+        if exclude_statuses:
+            try:
+                prev_fup = prev_fup_qs.latest("date")
+                prev_status = prev_fup.new_status
+            except ObjectDoesNotExist:
+                prev_status = self.ticket.status
+            
+            # don't calculate status exclusions
+            if prev_status in exclude_statuses:
+                return datetime.timedelta(seconds=0)
+        
+        # find the previous queue for exclusion check
+        if exclude_queues:
+            try:
+                prev_fup_ids = prev_fup_qs.values_list('id', flat=True)
+                prev_queue_change = TicketChange.objects.filter(followup_id__in=prev_fup_ids,
+                                                                field=_('Queue')).latest('id')
+                prev_queue = Queue.objects.get(pk=prev_queue_change.new_value)
+                prev_queue_slug = prev_queue.slug
+            except ObjectDoesNotExist:
+                prev_queue_slug = self.ticket.queue.slug
+            
+            # don't calculate queue exclusions
+            if prev_queue_slug in exclude_queues:
+                return datetime.timedelta(seconds=0)
+
+        # no exclusion found
+
+        time_spent_seconds = 0
+
+        # extract earliest from previous follow-up or ticket
+        try:
+            prev_fup = prev_fup_qs.latest("date")
+            earliest = prev_fup.date
+        except ObjectDoesNotExist:
+            earliest = self.ticket.created
+
+        # latest time is current follow-up date
+        latest = self.date
+        
+        # split time interval by days
+        days = latest.toordinal() - earliest.toordinal()
+        for day in range(days + 1):
+            if day == 0:
+                start_day_time = earliest
+                if days == 0:
+                    # close single day case
+                    end_day_time = latest
+                else:
+                    end_day_time = earliest.replace(hour=23, minute=59, second=59, microsecond=999999)
+            elif day == days:
+                start_day_time = latest.replace(hour=0, minute=0, second=0)
+                end_day_time = latest
+            else:
+                middle_day_time = earliest + datetime.timedelta(days=day)
+                start_day_time = middle_day_time.replace(hour=0, minute=0, second=0)
+                end_day_time = middle_day_time.replace(hour=23, minute=59, second=59, microsecond=999999)
+            
+            if start_day_time.strftime("%Y-%m-%d") not in holidays:
+                time_spent_seconds += daily_time_spent_calculation(start_day_time, end_day_time, open_hours)
+
+        return datetime.timedelta(seconds=time_spent_seconds)
 
 class TicketChange(models.Model):
     """
@@ -1135,7 +1207,6 @@ class FollowUpAttachment(Attachment):
 
     def attachment_path(self, filename):
 
-        os.umask(0)
         path = 'helpdesk/attachments/{ticket_for_url}-{secret_key}/{id_}'.format(
             ticket_for_url=self.followup.ticket.ticket_for_url,
             secret_key=self.followup.ticket.secret_key,
@@ -1143,7 +1214,7 @@ class FollowUpAttachment(Attachment):
         att_path = os.path.join(settings.MEDIA_ROOT, path)
         if settings.DEFAULT_FILE_STORAGE == "django.core.files.storage.FileSystemStorage":
             if not os.path.exists(att_path):
-                os.makedirs(att_path, 0o777)
+                os.makedirs(att_path, helpdesk_settings.HELPDESK_ATTACHMENT_DIR_PERMS)
         return os.path.join(path, filename)
 
 
@@ -1157,14 +1228,13 @@ class KBIAttachment(Attachment):
 
     def attachment_path(self, filename):
 
-        os.umask(0)
         path = 'helpdesk/attachments/kb/{category}/{kbi}'.format(
             category=self.kbitem.category,
             kbi=self.kbitem.id)
         att_path = os.path.join(settings.MEDIA_ROOT, path)
         if settings.DEFAULT_FILE_STORAGE == "django.core.files.storage.FileSystemStorage":
             if not os.path.exists(att_path):
-                os.makedirs(att_path, 0o777)
+                os.makedirs(att_path, helpdesk_settings.HELPDESK_ATTACHMENT_DIR_PERMS)
         return os.path.join(path, filename)
 
 
@@ -2000,3 +2070,92 @@ class TicketDependency(models.Model):
 
     def __str__(self):
         return '%s / %s' % (self.ticket, self.depends_on)
+
+
+def is_a_list_without_empty_element(task_list):
+    if not isinstance(task_list, list):
+        raise ValidationError(f'{task_list} is not a list')
+    for task in task_list:
+        if not isinstance(task, str):
+            raise ValidationError(f'{task} is not a string')
+        if task.strip() == '':
+            raise ValidationError('A task cannot be an empty string')
+
+
+class ChecklistTemplate(models.Model):
+    name = models.CharField(
+        verbose_name=_('Name'),
+        max_length=100
+    )
+    task_list = models.JSONField(verbose_name=_('Task List'), validators=[is_a_list_without_empty_element])
+
+    class Meta:
+        verbose_name = _('Checklist Template')
+        verbose_name_plural = _('Checklist Templates')
+
+    def __str__(self):
+        return self.name
+
+
+class Checklist(models.Model):
+    ticket = models.ForeignKey(
+        Ticket,
+        on_delete=models.CASCADE,
+        verbose_name=_('Ticket'),
+        related_name='checklists',
+    )
+    name = models.CharField(
+        verbose_name=_('Name'),
+        max_length=100
+    )
+
+    class Meta:
+        verbose_name = _('Checklist')
+        verbose_name_plural = _('Checklists')
+
+    def __str__(self):
+        return self.name
+
+    def create_tasks_from_template(self, template):
+        for position, task in enumerate(template.task_list):
+            self.tasks.create(description=task, position=position)
+
+
+class ChecklistTaskQuerySet(models.QuerySet):
+    def todo(self):
+        return self.filter(completion_date__isnull=True)
+
+    def completed(self):
+        return self.filter(completion_date__isnull=False)
+
+
+class ChecklistTask(models.Model):
+    checklist = models.ForeignKey(
+        Checklist,
+        on_delete=models.CASCADE,
+        verbose_name=_('Checklist'),
+        related_name='tasks',
+    )
+    description = models.CharField(
+        verbose_name=_('Description'),
+        max_length=250
+    )
+    completion_date = models.DateTimeField(
+        verbose_name=_('Completion Date'),
+        null=True,
+        blank=True
+    )
+    position = models.PositiveSmallIntegerField(
+        verbose_name=_('Position'),
+        db_index=True
+    )
+
+    objects = ChecklistTaskQuerySet.as_manager()
+
+    class Meta:
+        verbose_name = _('Checklist Task')
+        verbose_name_plural = _('Checklist Tasks')
+        ordering = ('position',)
+
+    def __str__(self):
+        return self.description

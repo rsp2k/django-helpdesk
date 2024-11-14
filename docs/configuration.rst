@@ -13,7 +13,7 @@ Before django-helpdesk will be much use, you need to do some basic configuration
 
    Don't forget to set the relevant Django environment variables in your crontab::
 
-       */5 * * * * /path/to/helpdesksite/manage.py get_email
+    */5 * * * * /path/to/helpdesksite/manage.py get_email
 
    This will run the e-mail import every 5 minutes
 
@@ -22,16 +22,23 @@ Before django-helpdesk will be much use, you need to do some basic configuration
  If you wish to use `celery` instead of cron, you must add 'django_celery_beat' to `INSTALLED_APPS` and add a periodic celery task through the Django admin.
 
    You will need to create a support queue, and associated login/host values, in the Django admin interface, in order for mail to be picked-up from the mail server and placed in the tickets table of your database. The values in the settings file alone, will not create the necessary values to trigger the get_email function.
+   
+   DEBUGGING EMAIL EXTRACTION
+   ==========================
+   You can run the management command manually from the command line with additional commands options:
+       **debug_to_stdout** - set this when manually running the command from a terminal so that additional debugging about which queues are being processed is written to stdout (console by default)
+   For example: 
+       **/path/to/helpdesksite/manage.py get_email --debug_to_stdout**
 
 4. If you wish to automatically escalate tickets based on their age, set up a cronjob to run the escalation command on a regular basis::
 
-       0 * * * * /path/to/helpdesksite/manage.py escalate_tickets
+    0 * * * * /path/to/helpdesksite/manage.py escalate_tickets
 
    This will run the escalation process hourly, using the 'Escalation Days' setting for each queue to determine which tickets to escalate.
 
 5. If you wish to exclude some days (eg, weekends) from escalation calculations, enter the dates manually via the Admin, or setup a cronjob to run a management command on a regular basis::
 
-       0 0 * * 0 /path/to/helpdesksite/manage.py create_escalation_exclusions --days saturday,sunday --escalate-verbosely
+    0 0 * * 0 /path/to/helpdesksite/manage.py create_escalation_exclusions --days saturday sunday
 
    This will, on a weekly basis, create exclusions for the coming weekend.
 
@@ -39,9 +46,9 @@ Before django-helpdesk will be much use, you need to do some basic configuration
 
 7. If you do not send mail directly from your web server (eg, you need to use an SMTP server) then edit your ``settings.py`` file so it contains your mail server details::
 
-       EMAIL_HOST = 'XXXXX'
-       EMAIL_HOST_USER = 'YYYYYY@ZZZZ.PPP'
-       EMAIL_HOST_PASSWORD = '123456'
+    EMAIL_HOST = 'XXXXX'
+    EMAIL_HOST_USER = 'YYYYYY@ZZZZ.PPP'
+    EMAIL_HOST_PASSWORD = '123456'
 
 8. If you wish to use SOCKS4/5 proxy with Helpdesk Queue email operations, install PySocks manually. Please note that mixing both SOCKS and non-SOCKS email sources for different queues is only supported under Python 2; on Python 3, SOCKS proxy support is all-or-nothing: either all queue email sources must use SOCKS or none may use it. If you need this functionality on Python 3 please `let us know <https://github.com/django-helpdesk/django-helpdesk/issues/new>`_.
 
@@ -81,6 +88,6 @@ You may add your own site specific navigation header to be included inside the <
 
 1. Create an override template in your project's templates directory::
 
-       helpdesk/custom_navigation_header.html
+    helpdesk/custom_navigation_header.html
 
 2. Update the contents to display your custom navigation.
