@@ -1,6 +1,7 @@
 *.pyc
 .eggs/
 /dist/
+build/
 django_helpdesk.egg-info
 demo/*.egg-info
 demo/demodesk/*.sqlite3
