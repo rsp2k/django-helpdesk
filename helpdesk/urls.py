@@ -14,7 +14,7 @@ from django.views.generic import TemplateView
 from helpdesk import settings as helpdesk_settings
 from helpdesk.decorators import helpdesk_staff_member_required, protect_view
 from helpdesk.views import feeds, login, public, staff
-from helpdesk.views.api import CreateUserView, FollowUpAttachmentViewSet, FollowUpViewSet, TicketViewSet
+from helpdesk.views.api import CreateUserView, FollowUpAttachmentViewSet, FollowUpViewSet, TicketViewSet, UserTicketViewSet
 from rest_framework.routers import DefaultRouter
 
 
@@ -64,7 +64,7 @@ urlpatterns = [
     ),
     path("tickets/<int:ticket_id>/edit/", staff.edit_ticket, name="edit"),
     path("tickets/<int:ticket_id>/update/",
-         staff.update_ticket, name="update"),
+         staff.update_ticket_view, name="update"),
     path("tickets/<int:ticket_id>/delete/",
          staff.delete_ticket, name="delete"),
     path("tickets/<int:ticket_id>/hold/", staff.hold_ticket, name="hold"),
@@ -89,22 +89,53 @@ urlpatterns = [
         name="ticket_dependency_del",
     ),
     path(
+        "tickets/<int:ticket_id>/resolves/add/",
+        staff.ticket_resolves_add,
+        name="ticket_resolves_add",
+    ),
+    path(
+        "tickets/<int:ticket_id>/resolves/delete/<int:dependency_id>/",
+        staff.ticket_resolves_del,
+        name="ticket_resolves_del",
+    ),
+    path(
         "tickets/<int:ticket_id>/attachment_delete/<int:attachment_id>/",
         staff.attachment_del,
         name="attachment_del",
     ),
-    re_path(r"^raw/(?P<type>\w+)/$", staff.raw_details, name="raw"),
+    path(
+        "tickets/<int:ticket_id>/checklists/<int:checklist_id>/",
+        staff.edit_ticket_checklist,
+        name="edit_ticket_checklist"
+    ),
+    path(
+        "tickets/<int:ticket_id>/checklists/<int:checklist_id>/delete/",
+        staff.delete_ticket_checklist,
+        name="delete_ticket_checklist"
+    ),
+    re_path(r"^raw/(?P<type_>\w+)/$", staff.raw_details, name="raw"),
     path("rss/", staff.rss_list, name="rss_index"),
     path("reports/", staff.report_index, name="report_index"),
     re_path(r"^reports/(?P<report>\w+)/$",
             staff.run_report, name="run_report"),
     path("save_query/", staff.save_query, name="savequery"),
-    path("delete_query/<int:id>/", staff.delete_saved_query, name="delete_query"),
+    path("delete_query/<int:pk>/", staff.delete_saved_query, name="delete_query"),
     path("settings/", staff.EditUserSettingsView.as_view(), name="user_settings"),
     path("ignore/", staff.email_ignore, name="email_ignore"),
     path("ignore/add/", staff.email_ignore_add, name="email_ignore_add"),
     path("ignore/delete/<int:id>/",
          staff.email_ignore_del, name="email_ignore_del"),
+    path("checklist-templates/", staff.checklist_templates, name="checklist_templates"),
+    path(
+        "checklist-templates/<int:checklist_template_id>/",
+        staff.checklist_templates,
+        name="edit_checklist_template"
+    ),
+    path(
+        "checklist-templates/<int:checklist_template_id>/delete/",
+        staff.delete_checklist_template,
+        name="delete_checklist_template"
+    ),
     re_path(
         r"^datatables_ticket_list/(?P<query>{})$".format(base64_pattern),
         staff.datatables_ticket_list,
@@ -133,18 +164,19 @@ if helpdesk_settings.HELPDESK_ENABLE_DEPENDENCIES_ON_TICKET:
 
 urlpatterns += [
     path("", protect_view(public.Homepage.as_view()), name="home"),
+    path("tickets/my-tickets/", protect_view(public.MyTickets.as_view()), name="my-tickets"),
     path("tickets/submit/", public.create_ticket, name="submit"),
     path(
         "tickets/submit_iframe/",
-        public.CreateTicketIframeView.as_view(),
+        protect_view(public.CreateTicketIframeView.as_view()),
         name="submit_iframe",
     ),
     path(
         "tickets/success_iframe/",  # Ticket was submitted successfully
-        public.SuccessIframeView.as_view(),
+        protect_view(public.SuccessIframeView.as_view()),
         name="success_iframe",
     ),
-    path("view/", public.view_ticket, name="public_view"),
+    path("view/", protect_view(public.ViewTicket.as_view()), name="public_view"),
     path("change_language/", public.change_language,
          name="public_change_language"),
 ]
@@ -178,15 +210,14 @@ urlpatterns += [
 ]
 
 
-# API is added to url conf based on the setting (False by default)
-if helpdesk_settings.HELPDESK_ACTIVATE_API_ENDPOINT:
-    router = DefaultRouter()
-    router.register(r"tickets", TicketViewSet, basename="ticket")
-    router.register(r"followups", FollowUpViewSet, basename="followups")
-    router.register(r"followups-attachments",
-                    FollowUpAttachmentViewSet, basename="followupattachments")
-    router.register(r"users", CreateUserView, basename="user")
-    urlpatterns += [re_path(r"^api/", include(router.urls))]
+router = DefaultRouter()
+router.register(r"tickets", TicketViewSet, basename="ticket")
+router.register(r"user_tickets", UserTicketViewSet, basename="user_tickets")
+router.register(r"followups", FollowUpViewSet, basename="followups")
+router.register(r"followups-attachments",
+                FollowUpAttachmentViewSet, basename="followupattachments")
+router.register(r"users", CreateUserView, basename="user")
+urlpatterns += [re_path(r"^api/", include(router.urls))]
 
 
 urlpatterns += [
@@ -194,7 +225,7 @@ urlpatterns += [
     path(
         "logout/",
         auth_views.LogoutView.as_view(
-            template_name="helpdesk/registration/login.html", next_page="../"
+            template_name="helpdesk/registration/logged_out.html"
         ),
         name="logout",
     ),

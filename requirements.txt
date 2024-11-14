@@ -5,10 +5,11 @@ akismet
 markdown
 beautifulsoup4
 lxml
-simplejson
 pytz
-six
 pinax_teams
 djangorestframework
 django-model-utils
 django-cleanup
+oauthlib
+requests_oauthlib
+requests

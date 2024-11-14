@@ -7,7 +7,6 @@ forms.py - Definitions of newforms-based forms for creating and maintaining
            tickets.
 """
 
-
 from datetime import datetime
 from django import forms
 from django.conf import settings
@@ -18,6 +17,8 @@ from django.utils.translation import gettext_lazy as _
 from helpdesk import settings as helpdesk_settings
 from helpdesk.lib import convert_value, process_attachments, safe_template_context
 from helpdesk.models import (
+    Checklist,
+    ChecklistTemplate,
     CustomField,
     FollowUp,
     IgnoreEmail,
@@ -32,9 +33,11 @@ from helpdesk.settings import (
     CUSTOMFIELD_DATE_FORMAT,
     CUSTOMFIELD_DATETIME_FORMAT,
     CUSTOMFIELD_TIME_FORMAT,
-    CUSTOMFIELD_TO_FIELD_DICT
+    CUSTOMFIELD_TO_FIELD_DICT,
+    HELPDESK_SHOW_CUSTOM_FIELDS_FOLLOW_UP_LIST,
 )
 from helpdesk.validators import validate_file_extension
+from helpdesk.signals import new_ticket_done
 import logging
 
 
@@ -178,6 +181,46 @@ class EditTicketForm(CustomFieldMixin, forms.ModelForm):
         return super(EditTicketForm, self).save(*args, **kwargs)
 
 
+class EditTicketCustomFieldForm(EditTicketForm):
+    """
+    Uses the EditTicketForm logic to provide a form for Ticket custom fields.
+    """
+
+    def __init__(self, *args, **kwargs):
+        """
+        Add any custom fields that are defined to the form
+        """
+        super(EditTicketCustomFieldForm, self).__init__(*args, **kwargs)
+
+        if HELPDESK_SHOW_CUSTOM_FIELDS_FOLLOW_UP_LIST:
+            fields = list(self.fields)
+            for field in fields:
+                if field != 'id' and field.replace("custom_", "", 1) not in HELPDESK_SHOW_CUSTOM_FIELDS_FOLLOW_UP_LIST:
+                    self.fields.pop(field, None)
+    
+    def save(self, *args, **kwargs):
+
+        # if form is saved in a ticket update, it is passed
+        # a followup instance to trace custom fields changes
+        if "followup" in kwargs:
+            followup = kwargs.pop('followup', None)
+
+            for field, value in self.cleaned_data.items():
+                if field.startswith('custom_'):
+                    if value != self.fields[field].initial:
+                        c = followup.ticketchange_set.create(
+                            field=field.replace('custom_', '', 1),
+                            old_value=self.fields[field].initial,
+                            new_value=value,
+                        )
+
+        super(EditTicketCustomFieldForm, self).save(*args, **kwargs)
+
+    class Meta:
+        model = Ticket
+        fields = ('id', 'merged_to',)
+
+
 class EditFollowUpForm(forms.ModelForm):
 
     class Meta:
@@ -185,10 +228,10 @@ class EditFollowUpForm(forms.ModelForm):
         exclude = ('date', 'user',)
 
     def __init__(self, *args, **kwargs):
-        """Filter not openned tickets here."""
+        """Filter not opened tickets here."""
         super(EditFollowUpForm, self).__init__(*args, **kwargs)
         self.fields["ticket"].queryset = Ticket.objects.filter(
-            status__in=(Ticket.OPEN_STATUS, Ticket.REOPENED_STATUS))
+            status__in=Ticket.OPEN_STATUSES)
 
 
 class AbstractTicketForm(CustomFieldMixin, forms.Form):
@@ -237,17 +280,18 @@ class AbstractTicketForm(CustomFieldMixin, forms.Form):
         label=_('Due on'),
     )
 
-    attachment = forms.FileField(
-        widget=forms.FileInput(attrs={'class': 'form-control-file'}),
-        required=False,
-        label=_('Attach File'),
-        help_text=_('You can attach a file to this ticket. '
-                    'Only file types such as plain text (.txt), '
-                    'a document (.pdf, .docx, or .odt), '
-                    'or screenshot (.png or .jpg) may be uploaded.'),
-        validators=[validate_file_extension]
-    )
-
+    if helpdesk_settings.HELPDESK_ENABLE_ATTACHMENTS:
+        attachment = forms.FileField(
+            widget=forms.FileInput(attrs={'class': 'form-control-file'}),
+            required=False,
+            label=_('Attach File'),
+            help_text=_('You can attach a file to this ticket. '
+                        'Only file types such as plain text (.txt), '
+                        'a document (.pdf, .docx, or .odt), '
+                        'or screenshot (.png or .jpg) may be uploaded.'),
+            validators=[validate_file_extension]
+        )
+        
     class Media:
         js = ('helpdesk/js/init_due_date.js',
               'helpdesk/js/init_datetime_classes.js')
@@ -324,7 +368,7 @@ class AbstractTicketForm(CustomFieldMixin, forms.Form):
         return followup
 
     def _attach_files_to_follow_up(self, followup):
-        files = self.cleaned_data['attachment']
+        files = self.cleaned_data.get('attachment')
         if files:
             files = process_attachments(followup, [files])
         return files
@@ -416,7 +460,14 @@ class TicketForm(AbstractTicketForm):
         followup = self._create_follow_up(ticket, title=title, user=user)
         followup.save()
 
-        files = self._attach_files_to_follow_up(followup)
+        if helpdesk_settings.HELPDESK_ENABLE_ATTACHMENTS:
+            files = self._attach_files_to_follow_up(followup)
+        else:
+            files = None
+
+        # emit signal when the TicketForm.save is done
+        new_ticket_done.send(sender="TicketForm", ticket=ticket)
+
         self._send_messages(ticket=ticket,
                             queue=queue,
                             followup=followup,
@@ -506,6 +557,10 @@ class PublicTicketForm(AbstractTicketForm):
         followup.save()
 
         files = self._attach_files_to_follow_up(followup)
+
+        # emit signal when the PublicTicketForm.save is done
+        new_ticket_done.send(sender="PublicTicketForm", ticket=ticket)
+
         self._send_messages(ticket=ticket,
                             queue=queue,
                             followup=followup,
@@ -579,7 +634,26 @@ class TicketDependencyForm(forms.ModelForm):
 
     class Meta:
         model = TicketDependency
-        exclude = ('ticket',)
+        fields = ('depends_on',)
+
+    def __init__(self, ticket, *args, **kwargs):
+        super(TicketDependencyForm,self).__init__(*args, **kwargs)
+
+        # Only open tickets except myself, existing dependencies and parents
+        self.fields['depends_on'].queryset = Ticket.objects.filter(status__in=Ticket.OPEN_STATUSES).exclude(id=ticket.id).exclude(depends_on__ticket=ticket).exclude(ticketdependency__depends_on=ticket)
+
+class TicketResolvesForm(forms.ModelForm):
+    ''' Adds this ticket as a dependency for a different ticket '''
+
+    class Meta:
+        model = TicketDependency
+        fields = ('ticket',)
+
+    def __init__(self, ticket, *args, **kwargs):
+        super(TicketResolvesForm,self).__init__(*args, **kwargs)
+
+        # Only open tickets except myself, existing dependencies and parents
+        self.fields['ticket'].queryset = Ticket.objects.exclude(status__in=Ticket.OPEN_STATUSES).exclude(id=ticket.id).exclude(depends_on__ticket=ticket).exclude(ticketdependency__depends_on=ticket)
 
 
 class MultipleTicketSelectForm(forms.Form):
@@ -602,3 +676,46 @@ class MultipleTicketSelectForm(forms.Form):
             raise ValidationError(
                 _('All selected tickets must share the same queue in order to be merged.'))
         return tickets
+
+
+class ChecklistTemplateForm(forms.ModelForm):
+    name = forms.CharField(
+        widget=forms.TextInput(attrs={'class': 'form-control'}),
+        required=True,
+    )
+    task_list = forms.JSONField(widget=forms.HiddenInput())
+
+    class Meta:
+        model = ChecklistTemplate
+        fields = ('name', 'task_list')
+
+    def clean_task_list(self):
+        task_list = self.cleaned_data['task_list']
+        return list(map(lambda task: task.strip(), task_list))
+
+
+class ChecklistForm(forms.ModelForm):
+    name = forms.CharField(
+        widget=forms.TextInput(attrs={'class': 'form-control'}),
+        required=True,
+    )
+
+    class Meta:
+        model = Checklist
+        fields = ('name',)
+
+
+class CreateChecklistForm(ChecklistForm):
+    checklist_template = forms.ModelChoiceField(
+        label=_("Template"),
+        queryset=ChecklistTemplate.objects.all(),
+        widget=forms.Select(attrs={'class': 'form-control'}),
+        required=False,
+    )
+
+    class Meta(ChecklistForm.Meta):
+        fields = ('checklist_template', 'name')
+
+
+class FormControlDeleteFormSet(forms.BaseInlineFormSet):
+    deletion_widget = forms.CheckboxInput(attrs={'class': 'form-control'})

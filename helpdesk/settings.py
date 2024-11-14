@@ -6,8 +6,11 @@ Default settings for django-helpdesk.
 from django import forms
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
+from django.utils.translation import gettext_lazy as _
 import os
+import re
 import warnings
+import sys
 
 
 DEFAULT_USER_SETTINGS = {
@@ -45,6 +48,23 @@ HELPDESK_REDIRECT_TO_LOGIN_BY_DEFAULT = getattr(settings,
                                                 'HELPDESK_REDIRECT_TO_LOGIN_BY_DEFAULT',
                                                 False)
 
+HELPDESK_PUBLIC_VIEW_PROTECTOR = getattr(settings,
+                                         'HELPDESK_PUBLIC_VIEW_PROTECTOR',
+                                         lambda _: None)
+
+HELPDESK_STAFF_VIEW_PROTECTOR = getattr(settings,
+                                         'HELPDESK_STAFF_VIEW_PROTECTOR',
+                                         lambda _: None)
+
+# Enable ticket and Email attachments
+#
+# Caution! Set this to False, unless you have secured access to
+#   the uploaded files. Otherwise anyone on the Internet will be
+#   able to download your ticket attachments.
+HELPDESK_ENABLE_ATTACHMENTS = getattr(settings,
+                                      'HELPDESK_ENABLE_ATTACHMENTS',
+                                      True)
+
 # Enable the Dependencies field on ticket view
 HELPDESK_ENABLE_DEPENDENCIES_ON_TICKET = getattr(settings,
                                                  'HELPDESK_ENABLE_DEPENDENCIES_ON_TICKET',
@@ -59,9 +79,6 @@ HELPDESK_ENABLE_TIME_SPENT_ON_TICKET = getattr(settings,
 HELPDESK_ANON_ACCESS_RAISES_404 = getattr(settings,
                                           'HELPDESK_ANON_ACCESS_RAISES_404',
                                           False)
-
-# show knowledgebase links?
-HELPDESK_KB_ENABLED = getattr(settings, 'HELPDESK_KB_ENABLED', True)
 
 # Disable Timeline on ticket list
 HELPDESK_TICKETS_TIMELINE_ENABLED = getattr(
@@ -103,6 +120,85 @@ HELPDESK_AUTO_SUBSCRIBE_ON_TICKET_RESPONSE = getattr(settings,
 ALLOWED_URL_SCHEMES = getattr(settings, 'ALLOWED_URL_SCHEMES', (
     'file', 'ftp', 'ftps', 'http', 'https', 'irc', 'mailto', 'sftp', 'ssh', 'tel', 'telnet', 'tftp', 'vnc', 'xmpp',
 ))
+
+# Ticket status choices
+OPEN_STATUS = getattr(settings, 'HELPDESK_TICKET_OPEN_STATUS', 1)
+REOPENED_STATUS = getattr(settings, 'HELPDESK_TICKET_REOPENED_STATUS', 2)
+RESOLVED_STATUS = getattr(settings, 'HELPDESK_TICKET_RESOLVED_STATUS', 3)
+CLOSED_STATUS = getattr(settings, 'HELPDESK_TICKET_CLOSED_STATUS', 4)
+DUPLICATE_STATUS = getattr(settings, 'HELPDESK_TICKET_DUPLICATE_STATUS', 5)
+
+DEFAULT_TICKET_STATUS_CHOICES = (
+    (OPEN_STATUS, _('Open')),
+    (REOPENED_STATUS, _('Reopened')),
+    (RESOLVED_STATUS, _('Resolved')),
+    (CLOSED_STATUS, _('Closed')),
+    (DUPLICATE_STATUS, _('Duplicate')),
+)
+TICKET_STATUS_CHOICES = getattr(settings,
+                                'HELPDESK_TICKET_STATUS_CHOICES',
+                                DEFAULT_TICKET_STATUS_CHOICES)
+
+# List of status choices considered as "open"
+DEFAULT_TICKET_OPEN_STATUSES = (OPEN_STATUS, REOPENED_STATUS)       
+TICKET_OPEN_STATUSES = getattr(settings,
+                               'HELPDESK_TICKET_OPEN_STATUSES',
+                               DEFAULT_TICKET_OPEN_STATUSES)
+
+# New status list choices depending on current ticket status
+DEFAULT_TICKET_STATUS_CHOICES_FLOW = {
+    OPEN_STATUS: (OPEN_STATUS, RESOLVED_STATUS, CLOSED_STATUS, DUPLICATE_STATUS,),
+    REOPENED_STATUS: (REOPENED_STATUS, RESOLVED_STATUS, CLOSED_STATUS, DUPLICATE_STATUS,),
+    RESOLVED_STATUS: (REOPENED_STATUS, RESOLVED_STATUS, CLOSED_STATUS,),
+    CLOSED_STATUS: (REOPENED_STATUS, CLOSED_STATUS,),
+    DUPLICATE_STATUS: (REOPENED_STATUS, DUPLICATE_STATUS,),
+}
+TICKET_STATUS_CHOICES_FLOW = getattr(settings,
+                                     'HELPDESK_TICKET_STATUS_CHOICES_FLOW',
+                                     DEFAULT_TICKET_STATUS_CHOICES_FLOW)
+
+# Ticket priority choices
+DEFAULT_TICKET_PRIORITY_CHOICES = (
+    (1, _('1. Critical')),
+    (2, _('2. High')),
+    (3, _('3. Normal')),
+    (4, _('4. Low')),
+    (5, _('5. Very Low')),
+)
+TICKET_PRIORITY_CHOICES = getattr(settings,
+                                  'HELPDESK_TICKET_PRIORITY_CHOICES',
+                                  DEFAULT_TICKET_PRIORITY_CHOICES)
+
+
+#########################
+# time tracking options #
+#########################
+
+# Follow-ups automatic time_spent calculation
+FOLLOWUP_TIME_SPENT_AUTO = getattr(settings,
+                                   'HELPDESK_FOLLOWUP_TIME_SPENT_AUTO',
+                                   False)
+
+# Calculate time_spent according to open hours
+FOLLOWUP_TIME_SPENT_OPENING_HOURS = getattr(settings,
+                                   'HELPDESK_FOLLOWUP_TIME_SPENT_OPENING_HOURS',
+                                   {})
+
+# Holidays don't count for time_spent calculation
+FOLLOWUP_TIME_SPENT_EXCLUDE_HOLIDAYS = getattr(settings,
+                                   'HELPDESK_FOLLOWUP_TIME_SPENT_EXCLUDE_HOLIDAYS',
+                                   ())
+
+# Time doesn't count for listed ticket statuses
+FOLLOWUP_TIME_SPENT_EXCLUDE_STATUSES = getattr(settings,
+                                   'HELPDESK_FOLLOWUP_TIME_SPENT_EXCLUDE_STATUSES',
+                                   ())
+
+# Time doesn't count for listed queues slugs
+FOLLOWUP_TIME_SPENT_EXCLUDE_QUEUES = getattr(settings,
+                                   'HELPDESK_FOLLOWUP_TIME_SPENT_EXCLUDE_QUEUES',
+                                   ())
+
 ############################
 # options for public pages #
 ############################
@@ -159,6 +255,10 @@ HELPDESK_SHOW_EDIT_BUTTON_FOLLOW_UP = getattr(settings,
                                               'HELPDESK_SHOW_EDIT_BUTTON_FOLLOW_UP',
                                               True)
 
+HELPDESK_SHOW_CUSTOM_FIELDS_FOLLOW_UP_LIST = getattr(settings,
+                                              'HELPDESK_SHOW_CUSTOM_FIELDS_FOLLOW_UP_LIST',
+                                              [])
+
 # show delete buttons in ticket follow ups if user is 'superuser'
 HELPDESK_SHOW_DELETE_BUTTON_SUPERUSER_FOLLOW_UP = getattr(
     settings, 'HELPDESK_SHOW_DELETE_BUTTON_SUPERUSER_FOLLOW_UP', False)
@@ -203,10 +303,6 @@ HELPDESK_MAX_EMAIL_ATTACHMENT_SIZE = getattr(
 HELPDESK_CREATE_TICKET_HIDE_ASSIGNED_TO = getattr(
     settings, 'HELPDESK_CREATE_TICKET_HIDE_ASSIGNED_TO', False)
 
-# Activate the API endpoint to manage tickets thanks to Django REST Framework
-HELPDESK_ACTIVATE_API_ENDPOINT = getattr(
-    settings, 'HELPDESK_ACTIVATE_API_ENDPOINT', False)
-
 
 #################
 # email options #
@@ -229,14 +325,25 @@ HELPDESK_ENABLE_PER_QUEUE_STAFF_PERMISSION = getattr(
 
 # use https in the email links
 HELPDESK_USE_HTTPS_IN_EMAIL_LINK = getattr(
-    settings, 'HELPDESK_USE_HTTPS_IN_EMAIL_LINK', False)
+    settings, 'HELPDESK_USE_HTTPS_IN_EMAIL_LINK', settings.SECURE_SSL_REDIRECT)
 
-HELPDESK_TEAMS_MODEL = getattr(
-    settings, 'HELPDESK_TEAMS_MODEL', 'pinax_teams.Team')
-HELPDESK_TEAMS_MIGRATION_DEPENDENCIES = getattr(settings, 'HELPDESK_TEAMS_MIGRATION_DEPENDENCIES', [
+# Default to True for backwards compatibility
+HELPDESK_TEAMS_MODE_ENABLED = getattr(settings, 'HELPDESK_TEAMS_MODE_ENABLED', True)
+if HELPDESK_TEAMS_MODE_ENABLED:
+    HELPDESK_TEAMS_MODEL = getattr(
+        settings, 'HELPDESK_TEAMS_MODEL', 'pinax_teams.Team')
+    HELPDESK_TEAMS_MIGRATION_DEPENDENCIES = getattr(settings, 'HELPDESK_TEAMS_MIGRATION_DEPENDENCIES', [
                                                 ('pinax_teams', '0004_auto_20170511_0856')])
-HELPDESK_KBITEM_TEAM_GETTER = getattr(
-    settings, 'HELPDESK_KBITEM_TEAM_GETTER', lambda kbitem: kbitem.team)
+    HELPDESK_KBITEM_TEAM_GETTER = getattr(
+        settings, 'HELPDESK_KBITEM_TEAM_GETTER', lambda kbitem: kbitem.team)
+else:
+    HELPDESK_TEAMS_MODEL = settings.AUTH_USER_MODEL
+    HELPDESK_TEAMS_MIGRATION_DEPENDENCIES = []
+    HELPDESK_KBITEM_TEAM_GETTER = lambda _: None
+
+# show knowledgebase links?
+# If Teams mode is enabled then it has to be on
+HELPDESK_KB_ENABLED = True if HELPDESK_TEAMS_MODE_ENABLED else getattr(settings, 'HELPDESK_KB_ENABLED', True)
 
 # Include all signatures and forwards in the first ticket message if set
 # Useful if you get forwards dropped from them while they are useful part
@@ -249,3 +356,52 @@ HELPDESK_FULL_FIRST_MESSAGE_FROM_EMAIL = getattr(
 # (which gets stripped/corrupted otherwise)
 HELPDESK_ALWAYS_SAVE_INCOMING_EMAIL_MESSAGE = getattr(
     settings, "HELPDESK_ALWAYS_SAVE_INCOMING_EMAIL_MESSAGE", False)
+
+#######################
+# email OAUTH         #
+#######################
+
+HELPDESK_OAUTH = getattr(
+    settings, 'HELPDESK_OAUTH', {
+        "token_url": "",
+        "client_id": "",
+        "secret": "",
+        "scope": [""]
+    }
+)
+
+# Set Debug Logging Level for IMAP Services. Default to '0' for No Debugging
+HELPDESK_IMAP_DEBUG_LEVEL = getattr(settings, 'HELPDESK_IMAP_DEBUG_LEVEL', 0)
+
+#############################################
+# file permissions - Attachment directories #
+#############################################
+
+# Attachment directories should be created with permission 755 (rwxr-xr-x)
+# Override it in your own Django settings.py
+HELPDESK_ATTACHMENT_DIR_PERMS = int(getattr(settings, 'HELPDESK_ATTACHMENT_DIR_PERMS', "755"), 8)
+
+HELPDESK_VALID_EXTENSIONS = getattr(settings, 'VALID_EXTENSIONS', None)
+if HELPDESK_VALID_EXTENSIONS:
+    # Print to stderr
+    print("VALID_EXTENSIONS is deprecated, use HELPDESK_VALID_EXTENSIONS instead", file=sys.stderr)
+else:
+    HELPDESK_VALID_EXTENSIONS = getattr(settings, 'HELPDESK_VALID_EXTENSIONS', ['.txt', '.asc', '.htm', '.html', '.pdf', '.doc', '.docx', '.odt', '.jpg', '.png', '.eml'])
+
+HELPDESK_VALIDATE_ATTACHMENT_TYPES = getattr(settings, 'HELPDESK_VALIDATE_ATTACHMENT_TYPES', True)
+
+def get_followup_webhook_urls():
+    urls = os.environ.get('HELPDESK_FOLLOWUP_WEBHOOK_URLS', None)
+    if urls:
+        return re.split(r'[\s],[\s]', urls)
+
+HELPDESK_GET_FOLLOWUP_WEBHOOK_URLS = getattr(settings, 'HELPDESK_GET_FOLLOWUP_WEBHOOK_URLS', get_followup_webhook_urls)
+
+def get_new_ticket_webhook_urls():
+    urls = os.environ.get('HELPDESK_NEW_TICKET_WEBHOOK_URLS', None)
+    if urls:
+        return urls.split(',')
+
+HELPDESK_GET_NEW_TICKET_WEBHOOK_URLS = getattr(settings, 'HELPDESK_GET_NEW_TICKET_WEBHOOK_URLS', get_new_ticket_webhook_urls)
+
+HELPDESK_WEBHOOK_TIMEOUT = getattr(settings, 'HELPDESK_WEBHOOK_TIMEOUT', 3)
