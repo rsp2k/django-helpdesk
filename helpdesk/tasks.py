@@ -1,4 +1,5 @@
 from .email import process_email
+from .models import EscalationExclusion
 
 try:
     from celery import shared_task
@@ -18,7 +19,7 @@ try:
 
     @db_periodic_task(crontab(minute='0'))
     def escalate_tickets():
-        create_exclusions(occurrences=1)
+        EscalationExclusion.objects.create_exclusions(occurrences=1)
 
 except  ImportError:
     pass
